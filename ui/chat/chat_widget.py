@@ -92,7 +92,7 @@ class ChatWidget(QWidget):
         
         input_layout = QHBoxLayout(self.input_container)
         input_layout.setContentsMargins(0, 0, 0, 0)
-        input_layout.setSpacing(4)
+        input_layout.setSpacing(5)
 
         self.input_field = QLineEdit()
         self.input_field.setObjectName("ChatInput")

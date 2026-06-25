@@ -17,26 +17,6 @@
 }
 
 /* --- Стили Бокового меню --- */
-QPushButton.SidebarButton {
-    text-align: left;
-    padding: 12px 12px;
-    border-radius: 12px;
-    background-color: transparent;
-    font-size: 15px;
-    font-weight: 500;
-    border: none;
-}
-
-QPushButton.SidebarButton:hover {
-    background-color: #494d64; /* surface1 */
-}
-
-QPushButton.SidebarButton:checked {
-    background-color: #8aadf4; /* blue (primary) */
-    color: #181825; /* Темный текст для контраста */
-    font-weight: bold;
-}
-
 QFrame#MenuDivider {
     margin: 10px;
 }

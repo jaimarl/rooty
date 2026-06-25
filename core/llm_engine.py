@@ -154,36 +154,32 @@ class LocalLLMEngine:
         valid_keys = list(config.ROUTING_RULES.keys())
         keys_str = ", ".join(valid_keys)
 
-        # 1. Извлекаем историю диалога для понимания контекста
         history_text = ""
         recent_history = self.history[-4:] if len(self.history) >= 4 else self.history
         for msg in recent_history:
-            role_name = "User" if msg["role"] == "user" else "Assistant"
-            content_snippet = msg["content"][:150] + "..." if len(msg["content"]) > 150 else msg["content"]
+            role_name = "jaimarl" if msg["role"] == "user" else "Ассистент"
+            content_snippet = msg["content"][:200] + "..." if len(msg["content"]) > 200 else msg["content"]
             history_text += f"[{role_name}]: {content_snippet}\n"
 
         if not history_text:
             history_text = "(Диалог только начался)"
 
-        # 2. Формируем умный промпт с учетом памяти
-        prompt = f"""Анализируй входящий запрос пользователя по двум критериям, ОБЯЗАТЕЛЬНО УЧИТЫВАЯ КОНТЕКСТ ДИАЛОГА.
-        Если текущий запрос короткий, но опирается на сложный контекст (например, "напиши еще один пример", "объясни подробнее"), сложность должна быть 'complex'.
+        prompt = f"""Проанализируй последний запрос пользователя с учетом ИСТОРИИ ДИАЛОГА.
 
-        КОНТЕКСТ ДИАЛОГА:
+        ИСТОРИЯ ДИАЛОГА:
         {history_text}
 
-        1. СЛОЖНОСТЬ ЗАПРОСА:
-        - "simple": на запрос можно ответить коротко (1–3 предложения), без написания кода, длинных списков или вычислений (например: приветствие, дата, короткий факт).
-        - "complex": запрос требует развернутого ответа, написания кода, пошаговых инструкций, глубокого анализа или размышлений.
+        ПОСЛЕДНИЙ ЗАПРОС: "{user_prompt}"
 
-        2. КАТЕГОРИЯ ЗАПРОСА:
-        Выбери строго одну категорию, которая лучше всего подходит, из этого списка: {keys_str}.
+        Твоя задача:
+        1. Понять смысл. Если последний запрос короткий (например, "еще пример", "объясни", "перепиши"), он относится к предыдущему ответу Ассистента.
+        2. Оценить СЛОЖНОСТЬ:
+        - "simple": запрос требует ответа в 1-3 предложения (приветствие, факт, простой вопрос).
+        - "complex": пользователю нужен длинный ответ, код, решение задачи или подробный анализ (ДАЖЕ ЕСЛИ сам запрос состоит из двух слов, но по контексту подразумевает сложную работу).
+        3. Выбрать КАТЕГОРИЮ из списка: {keys_str}.
 
         ФОРМАТ ОТВЕТА:
-        Выведи ровно два слова через один пробел: [сложность] [категория]. 
-        Никаких дополнительных пояснений, вводных слов или кавычек.
-
-        Запрос пользователя: {user_prompt}"""
+        Выведи строго два слова через пробел: [сложность] [категория]. Никаких других символов."""
 
         messages = [
             {"role": "system", "content": "Ты строгий классификатор. Отвечай только двумя словами."},
@@ -214,27 +210,29 @@ class LocalLLMEngine:
             print(f"[ERROR] Ошибка роутера: {e}")
             return True, config.DEFAULT_TASK_TYPE
 
-
-
-
-    def generate_fast_response(self, user_prompt: str, system_prompt: str, stream: bool = True):
+    def generate_fast_response(self, user_prompt: str, system_prompt: str) -> str:
         """
-        Генерация текста с помощью микро-модели (роутера). 
-        Она всегда загружена в RAM, поэтому отвечает мгновенно.
+        Синхронная генерация. Возвращает готовую строку для уникальных уведомлений в оверлее.
         """
         messages = [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt}
         ]
         
-        # Если нужен мгновенный целый ответ (для оверлея)
-        if not stream:
-            response = self.router_llm.create_chat_completion(
-                messages, max_tokens=100, temperature=0.7
-            )
-            return response["choices"][0]["message"]["content"].strip()
+        response = self.router_llm.create_chat_completion(
+            messages, max_tokens=150, temperature=0.8, stream=False
+        )
+        return response["choices"][0]["message"]["content"].strip()
             
-        # Если нужен стриминг (для ответов в консоль)
+    def stream_fast_response(self, user_prompt: str, system_prompt: str):
+        """
+        Асинхронная (потоковая) генерация с yield. Для вывода быстрых ответов в консоль.
+        """
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt}
+        ]
+        
         response = self.router_llm.create_chat_completion(
             messages, stream=True, max_tokens=300, temperature=0.7
         )
@@ -242,44 +240,53 @@ class LocalLLMEngine:
             if "content" in chunk["choices"][0]["delta"]:
                 yield chunk["choices"][0]["delta"]["content"]
 
-    def generate_stream(self, user_prompt: str, long_term_context: str = "", task_type: str = "chat"):
-        self.switch_model(task_type)
-        
-        dynamic_system_prompt = config.PERSONAS[self.current_persona]
-        
-        task_instructions = config.ROUTING_RULES[task_type].get("system_injection", "")
-        if task_instructions:
-            dynamic_system_prompt += f"\n\nIMPORTANT RULE FOR THIS REQUEST: {task_instructions}"
-        
-        if long_term_context:
-            dynamic_system_prompt += f"\n\nConsider the context of previous conversations:\n{long_term_context}"
+    def generate_stream(self, user_prompt: str, long_term_context: str = None, task_type: str = "chat"):
+        """
+        Потоковая генерация развернутого ответа тяжелой моделью.
+        Учитывает характер персонажа, историю диалога и базу воспоминаний.
+        """
+        # 1. Загружаем нужную модель (например, code или chat)
+        if self.llm is None or task_type != getattr(self, 'current_model_key', ''):
+            self.switch_model(task_type)
 
-        messages = [{"role": "system", "content": dynamic_system_prompt}]
+        # 2. Извлекаем описание текущего персонажа из конфига
+        persona_prompt = config.PERSONAS.get(self.current_persona, config.PERSONAS.get(config.DEFAULT_PERSONA, ""))
+        
+        # Инструкция + системное имя пользователя
+        system_content = f"{persona_prompt}\n\nИНСТРУКЦИЯ: Твоего собеседника зовут jaimarl. Он ожидает развернутый, подробный ответ. Пиши код, пошаговые инструкции или глубокий анализ, если это необходимо."
+        
+        # 3. Подмешиваем долгосрочную память (RAG), если она найдена
+        if long_term_context:
+            system_content += f"\n\nВОСПОМИНАНИЯ ИЗ БАЗЫ ДАННЫХ:\n{long_term_context}"
+
+        # 4. Формируем массив сообщений (Система -> История -> Текущий запрос)
+        messages = [{"role": "system", "content": system_content}]
         messages.extend(self.history)
         messages.append({"role": "user", "content": user_prompt})
 
-        response_generator = self.llm.create_chat_completion(
-            messages=messages,
-            max_tokens=config.MAX_TOKENS,
-            temperature=config.TEMPERATURE,
-            top_p=config.TOP_P,
-            repeat_penalty=config.REPEAT_PENALTY,
-            stream=True 
-        )
-
-        full_assistant_response = ""
-        
         try:
-            for chunk in response_generator:
-                delta = chunk["choices"][0]["delta"]
-                if "content" in delta:
-                    token = delta["content"]
-                    full_assistant_response += token 
-                    yield token
+            # Запускаем генерацию с увеличенным max_tokens для длинных ответов
+            response = self.llm.create_chat_completion(
+                messages=messages,
+                stream=True,
+                max_tokens=2048, 
+                temperature=0.7
+            )
+            
+            full_assistant_response = ""
+            for chunk in response:
+                if "content" in chunk["choices"][0]["delta"]:
+                    content = chunk["choices"][0]["delta"]["content"]
+                    full_assistant_response += content
+                    yield content
+                    
         finally:
-            if full_assistant_response.strip():
+            # 5. Сохраняем результат в оперативную память для Роутера
+            if 'full_assistant_response' in locals() and full_assistant_response.strip():
                 self.history.append({"role": "user", "content": user_prompt})
                 self.history.append({"role": "assistant", "content": full_assistant_response})
-
-                if len(self.history) > config.MAX_HISTORY_MESSAGES:
-                    self.history = self.history[-config.MAX_HISTORY_MESSAGES:]
+                
+                # Защита от переполнения контекстного окна
+                max_hist = getattr(config, 'MAX_HISTORY_MESSAGES', 10)
+                if len(self.history) > max_hist:
+                    self.history = self.history[-max_hist:]

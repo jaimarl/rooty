@@ -75,7 +75,7 @@ class CLIApp:
         """Главный цикл приложения."""
         while True:
             try:
-                user_text = input(f"\n> Вы: ").strip()
+                user_text = input(f"\n[jaimarl@nixos]~> ").strip()
                 if not user_text:
                     continue
 
@@ -85,12 +85,10 @@ class CLIApp:
 
                 self.send_overlay("thinking")
                 
-                # 1. RAG (Поиск контекста в памяти)
                 context = self.memory.search_relevant_context(user_text)
                 if context:
-                    print(f"[SYSTEM] Извлечено воспоминаний из БД: {context.count('Пользователь:')}")
+                    print(f"[SYSTEM] Извлечено воспоминаний из БД: {context.count('jaimarl:')}")
 
-                # 2. Умный роутинг: узнаем сложность и тип
                 is_complex, task_type = self.engine.analyze_prompt(user_text)
 
                 # =========================================================
@@ -100,12 +98,14 @@ class CLIApp:
                     print(f"[SYSTEM] ⚡ Быстрый ответ (Категория: {task_type.upper()})")
                     print(f"> Fast-Агент: ", end="", flush=True)
                     
-                    sys_prompt = "Ты быстрый ИИ-помощник. Отвечай кратко, ёмко и по делу (максимум 1-3 предложения)."
+                    sys_prompt = config.PERSONAS.get(self.engine.current_persona, config.PERSONAS[config.DEFAULT_PERSONA])
+                    sys_prompt += "\n\nИНСТРУКЦИЯ: Отвечай кратко, ёмко и по делу (максимум 1-3 предложения)."
+                    
                     if context:
                         sys_prompt += f"\nИспользуй этот контекст памяти: {context}"
                         
                     full_response = ""
-                    for token in self.engine.generate_fast_response(user_text, sys_prompt, stream=True):
+                    for token in self.engine.stream_fast_response(user_text, sys_prompt):
                         full_response += token
                         print(token, end="", flush=True)
                     print()
@@ -113,7 +113,12 @@ class CLIApp:
                     if full_response.strip():
                         self.memory.save_interaction(user_text, full_response)
                         
-                    # Оверлей показывает готовый ответ и сам скрывается
+                        # Сохранение в RAM-контекст для Роутера
+                        self.engine.history.append({"role": "user", "content": user_text})
+                        self.engine.history.append({"role": "assistant", "content": full_response})
+                        if len(self.engine.history) > config.MAX_HISTORY_MESSAGES:
+                            self.engine.history = self.engine.history[-config.MAX_HISTORY_MESSAGES:]
+                        
                     self.send_overlay("response", full_response)
 
                 # =========================================================
@@ -122,23 +127,20 @@ class CLIApp:
                 else:
                     print(f"[SYSTEM] 🧠 Глубокий анализ (Категория: {task_type.upper()})")
                     
-                    # А) Секретарь пишет уведомление
-                    notify_sys = "Напиши ОДНО короткое предложение. Скажи, что ты приступил к сложной задаче и просишь пользователя немного подождать."
-                    notify_msg = self.engine.generate_fast_response(user_text, notify_sys, stream=False)
+                    # Динамическая генерация уведомления в стиле персонажа
+                    persona_prompt = config.PERSONAS.get(self.engine.current_persona, config.PERSONAS[config.DEFAULT_PERSONA])
+                    notify_sys = f"{persona_prompt}\n\nСИСТЕМНОЕ ЗАДАНИЕ: jaimarl только что дал сложную задачу. Напиши ОДНО короткое предложение. Предупреди, что тебе нужно время на анализ/написание кода, и попроси немного подождать. Ярко прояви свой характер! Придумай уникальную фразу."
                     
-                    # ИСПРАВЛЕНИЕ 1: Печатаем ответ Fast-Агента в терминал
+                    notify_msg = self.engine.generate_fast_response(user_text, notify_sys)
+                    
                     print(f"> Fast-Агент: {notify_msg}")
-                    
-                    # ИСПРАВЛЕНИЕ 2: Отправляем в оверлей статус thinking, чтобы плашка висела до конца
                     self.send_overlay("thinking", f"⏳ {notify_msg}")
                     
-                    # Б) Грузим профильную тяжелую модель, если нужно
                     if task_type != self.engine.current_model_key:
                         print(f"[SYSTEM] Подготовка модели {task_type.upper()}...")
                         
                     print(f"> {self.engine.current_persona.capitalize()}: ", end="", flush=True)
                     
-                    # В) Запускаем долгую генерацию в консоль
                     full_response = ""
                     for token in self.engine.generate_stream(user_text, long_term_context=context, task_type=task_type):
                         full_response += token
@@ -148,7 +150,6 @@ class CLIApp:
                     if full_response.strip():
                         self.memory.save_interaction(user_text, full_response)
                         
-                    # Даем сигнал в оверлей, что тяжелая работа закончена
                     self.send_overlay("response", "✅ Готово! Подробный ответ выведен в терминал.")
 
             except KeyboardInterrupt:

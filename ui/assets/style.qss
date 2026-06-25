@@ -1,0 +1,118 @@
+/* Глобальные стили */
+* {
+    font-family: "Segoe UI", "Roboto", sans-serif;
+    color: #cad3f5;
+    font-size: 14px;
+    outline: none; /* Убираем системную рамку фокуса */
+}
+
+/* Главный контейнер (задает базовый цвет и внешнюю рамку окна 8px) */
+#MainWindowContainer {
+    background-color: #1e2030; /* mantle - цвет сайдбара */
+}
+
+/* Правая часть окна (теперь она прозрачная и наследует цвет рамки) */
+#MainContentArea {
+    background-color: transparent; 
+}
+
+/* --- Стили Бокового меню --- */
+QPushButton.SidebarButton {
+    text-align: left;
+    padding: 12px 12px;
+    border-radius: 12px;
+    background-color: transparent;
+    font-size: 15px;
+    font-weight: 500;
+    border: none;
+}
+
+QPushButton.SidebarButton:hover {
+    background-color: #494d64; /* surface1 */
+}
+
+QPushButton.SidebarButton:checked {
+    background-color: #8aadf4; /* blue (primary) */
+    color: #181825; /* Темный текст для контраста */
+    font-weight: bold;
+}
+
+QFrame#MenuDivider {
+    margin: 10px;
+}
+
+/* --- Стили Чата --- */
+
+/* НОВЫЙ КОНТЕЙНЕР: Зона истории сообщений */
+#ChatLogContainer {
+    background-color: #24273a; /* base - более темный фон самого чата */
+    border-radius: 12px;
+}
+
+#ChatScrollArea {
+    background-color: transparent;
+    border: none;
+}
+
+#ChatScrollAreaWidget {
+    background-color: transparent;
+}
+
+/* КОНТЕЙНЕР ВВОДА */
+#InputContainer {
+    background-color: transparent; /* Сливается с цветом окна/сайдбара */
+}
+
+/* Поле ввода (Красивый современный дизайн) */
+#ChatInput {
+    background-color: #24273a; /* crust - самый темный оттенок */
+    border-top-left-radius: 12px;
+    border-bottom-left-radius: 12px;
+    border-top-right-radius: 4px;
+    border-bottom-right-radius: 4px;
+    padding: 12px 18px;
+    font-size: 15px;
+}
+
+#ChatInput:focus {
+    border: 1px solid #8aadf4; /* Синяя подсветка при фокусе */
+}
+
+/* Кнопка отправки (Идеальный круг) */
+#SendButton {
+    background-color: #8aadf4;
+    border-top-left-radius: 4px;
+    border-bottom-left-radius: 4px;
+    border-top-right-radius: 12px;
+    border-bottom-right-radius: 12px;
+    min-width: 44px;
+    max-width: 44px;
+    min-height: 44px;
+    max-height: 44px;
+    font-weight: bold;
+    color: #1e2030;
+    font-size: 18px;
+}
+
+#SendButton:hover {
+    background-color: #7dc4e4;
+}
+
+/* Пузыри сообщений */
+QLabel.ChatBubble {
+    padding: 14px 18px;
+    border-radius: 18px;
+    font-size: 15px;
+}
+
+QLabel.UserBubble {
+    background-color: #8aadf4;
+    color: #181825;
+    border-bottom-right-radius: 4px;
+}
+
+QLabel.AIBubble {
+    background-color: #363a4f;
+    color: #cad3f5;
+    border-bottom-left-radius: 4px;
+}

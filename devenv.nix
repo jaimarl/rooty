@@ -8,11 +8,14 @@
         gtk3
         gtk-layer-shell
         gobject-introspection
+
+        qt6.qtsvg
+        qt6.qtwayland
     ];
 
     languages.python = {
         enable = true;
-        package = pkgs.python311.withPackages (ps: with ps; [ pygobject3 ]);
+        package = pkgs.python311.withPackages (ps: with ps; [ pygobject3 pyqt6 ]);
         venv.enable = false; 
     };
 
@@ -35,6 +38,8 @@
             gdk-pixbuf
             atk
         ]);
+
+        QT_PLUGIN_PATH = "${pkgs.qt6.qtsvg}/lib/qt-6/plugins:${pkgs.qt6.qtbase}/lib/qt-6/plugins";
     };
 
     enterShell = ''

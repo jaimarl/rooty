@@ -2,6 +2,7 @@ import json
 import os
 import gc
 import sys
+import getpass
 from llama_cpp import Llama
 from core import config
 
@@ -17,20 +18,19 @@ class LocalLLMEngine:
             print(f"[ERROR] Router model not found at: {config.ROUTER_MODEL_PATH}")
             sys.exit(1)
         try:
+            # ОПТИМИЗАЦИЯ 1: Переносим роутер на GPU и ускоряем чтение
             self.router_llm = Llama(
                 model_path=config.ROUTER_MODEL_PATH,
                 n_ctx=2048,
-                n_threads=4,
-                n_gpu_layers=0,
-                n_batch=128,
+                n_threads=8,          # Увеличено для многопоточности
+                n_gpu_layers=-1,      # Установлено -1 вместо 0 (оффлоад на видеокарту)
+                n_batch=512,         # Позволяет нейросети прочитать весь промпт за один такт
                 verbose=False
             )
-            print("[SYSTEM] Neuro-router successfully loaded into RAM.")
+            print("[SYSTEM] Neuro-router successfully loaded into VRAM.")
         except Exception as e:
             print(f"[ERROR] Router initialization failure: {e}")
             sys.exit(1)
-        
-        self.switch_model("chat")
 
     def _load_saved_persona(self) -> str:
         if not os.path.exists(config.SETTINGS_PATH):
@@ -70,9 +70,9 @@ class LocalLLMEngine:
 
     def switch_model(self, model_key: str):
         """Динамически переключает рабочую модель на GPU."""
-        if self.current_model_key == model_key:
-            return 
-            
+        if self.current_model_key == model_key and self.llm is not None:
+            return            
+
         model_filename = config.MODELS.get(model_key, config.MODELS.get("chat"))
         model_path = os.path.join(config.MODELS_DIR, model_filename)
         
@@ -94,9 +94,9 @@ class LocalLLMEngine:
             self.llm = Llama(
                 model_path=model_path,
                 n_ctx=config.CONTEXT_SIZE,
-                n_threads=4, 
+                n_threads=8, 
                 n_gpu_layers=-1, 
-                n_batch=128,
+                n_batch=256,
                 verbose=False   
             )
             self.current_model_key = model_key
@@ -104,39 +104,16 @@ class LocalLLMEngine:
         except Exception as e:
             print(f"[ERROR] Ошибка переключения модели: {e}")
 
-    def switch_model(self, model_key: str):
-        if self.current_model_key == model_key:
-            return 
-            
-        model_filename = config.MODELS.get(model_key, config.MODELS.get("chat"))
-        model_path = os.path.join(config.MODELS_DIR, model_filename)
-        
-        if not os.path.exists(model_path):
-            print(f"[WARNING] Model '{model_filename}' not found")
-            return
-
-        print(f"\n[SYSTEM] Context switch. Loading model '{model_key}' ({model_filename})...")
-        
-        if self.llm is not None:
+    def unload_heavy_model(self):
+        """Принудительно выгружает тяжелую модель из памяти для освобождения VRAM."""
+        if getattr(self, 'llm', None) is not None:
             if hasattr(self.llm, 'close'):
                 self.llm.close()
-            del self.llm 
+            del self.llm
             self.llm = None
+            self.current_model_key = None
             gc.collect()
-            
-        try:
-            self.llm = Llama(
-                model_path=model_path,
-                n_ctx=config.CONTEXT_SIZE,
-                n_threads=4, 
-                n_gpu_layers=-1, 
-                n_batch=128,
-                verbose=False   
-            )
-            self.current_model_key = model_key
-            print(f"[SYSTEM] Model '{model_key}' loaded successfully")
-        except Exception as e:
-            print(f"[ERROR] Model switching error: {e}")
+            print("\033[90m[ SYSTEM ] Тяжелая модель выгружена (VRAM очищена).\033[0m")
 
     def clear_history(self):
         self.history = []
@@ -145,44 +122,27 @@ class LocalLLMEngine:
         return self.history
 
     def analyze_prompt(self, user_prompt: str) -> tuple[bool, str]:
-        """
-        Умный роутер. Определяет сложность и категорию с учетом истории диалога.
-        """
-        if self.llm is None:
-            self.switch_model(config.DEFAULT_TASK_TYPE)
-
         valid_keys = list(config.ROUTING_RULES.keys())
         keys_str = ", ".join(valid_keys)
 
         history_text = ""
         recent_history = self.history[-4:] if len(self.history) >= 4 else self.history
         for msg in recent_history:
-            role_name = "jaimarl" if msg["role"] == "user" else "Ассистент"
+            role_name = getpass.getuser() if msg["role"] == "user" else "Ассистент"
             content_snippet = msg["content"][:200] + "..." if len(msg["content"]) > 200 else msg["content"]
             history_text += f"[{role_name}]: {content_snippet}\n"
 
         if not history_text:
             history_text = "(Диалог только начался)"
 
-        prompt = f"""Проанализируй последний запрос пользователя с учетом ИСТОРИИ ДИАЛОГА.
-
-        ИСТОРИЯ ДИАЛОГА:
-        {history_text}
-
-        ПОСЛЕДНИЙ ЗАПРОС: "{user_prompt}"
-
-        Твоя задача:
-        1. Понять смысл. Если последний запрос короткий (например, "еще пример", "объясни", "перепиши"), он относится к предыдущему ответу Ассистента.
-        2. Оценить СЛОЖНОСТЬ:
-        - "simple": запрос требует ответа в 1-3 предложения (приветствие, факт, простой вопрос).
-        - "complex": пользователю нужен длинный ответ, код, решение задачи или подробный анализ (ДАЖЕ ЕСЛИ сам запрос состоит из двух слов, но по контексту подразумевает сложную работу).
-        3. Выбрать КАТЕГОРИЮ из списка: {keys_str}.
-
-        ФОРМАТ ОТВЕТА:
-        Выведи строго два слова через пробел: [сложность] [категория]. Никаких других символов."""
+        prompt = config.ROUTER_USER_PROMPT_TEMPLATE.format(
+            history_text=history_text,
+            user_prompt=user_prompt,
+            keys_str=keys_str
+        )
 
         messages = [
-            {"role": "system", "content": "Ты строгий классификатор. Отвечай только двумя словами."},
+            {"role": "system", "content": config.ROUTER_SYSTEM_PROMPT},
             {"role": "user", "content": prompt}
         ]
 
@@ -211,9 +171,7 @@ class LocalLLMEngine:
             return True, config.DEFAULT_TASK_TYPE
 
     def generate_fast_response(self, user_prompt: str, system_prompt: str) -> str:
-        """
-        Синхронная генерация. Возвращает готовую строку для уникальных уведомлений в оверлее.
-        """
+        """Синхронная генерация. Возвращает готовую строку для уникальных уведомлений в оверлее."""
         messages = [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt}
@@ -225,9 +183,7 @@ class LocalLLMEngine:
         return response["choices"][0]["message"]["content"].strip()
             
     def stream_fast_response(self, user_prompt: str, system_prompt: str):
-        """
-        Асинхронная (потоковая) генерация с yield. Для вывода быстрых ответов в консоль.
-        """
+        """Асинхронная (потоковая) генерация с yield. Для вывода быстрых ответов в консоль."""
         messages = [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt}
@@ -241,31 +197,22 @@ class LocalLLMEngine:
                 yield chunk["choices"][0]["delta"]["content"]
 
     def generate_stream(self, user_prompt: str, long_term_context: str = None, task_type: str = "chat"):
-        """
-        Потоковая генерация развернутого ответа тяжелой моделью.
-        Учитывает характер персонажа, историю диалога и базу воспоминаний.
-        """
-        # 1. Загружаем нужную модель (например, code или chat)
+        """Потоковая генерация развернутого ответа тяжелой моделью."""
         if self.llm is None or task_type != getattr(self, 'current_model_key', ''):
             self.switch_model(task_type)
 
-        # 2. Извлекаем описание текущего персонажа из конфига
         persona_prompt = config.PERSONAS.get(self.current_persona, config.PERSONAS.get(config.DEFAULT_PERSONA, ""))
         
-        # Инструкция + системное имя пользователя
-        system_content = f"{persona_prompt}\n\nИНСТРУКЦИЯ: Твоего собеседника зовут jaimarl. Он ожидает развернутый, подробный ответ. Пиши код, пошаговые инструкции или глубокий анализ, если это необходимо."
+        system_content = f"{persona_prompt}\n\nИНСТРУКЦИЯ: Твоего собеседника зовут {getpass.getuser()}. Он ожидает развернутый, подробный ответ. Пиши код, пошаговые инструкции или глубокий анализ, если это необходимо."
         
-        # 3. Подмешиваем долгосрочную память (RAG), если она найдена
         if long_term_context:
             system_content += f"\n\nВОСПОМИНАНИЯ ИЗ БАЗЫ ДАННЫХ:\n{long_term_context}"
 
-        # 4. Формируем массив сообщений (Система -> История -> Текущий запрос)
         messages = [{"role": "system", "content": system_content}]
         messages.extend(self.history)
         messages.append({"role": "user", "content": user_prompt})
 
         try:
-            # Запускаем генерацию с увеличенным max_tokens для длинных ответов
             response = self.llm.create_chat_completion(
                 messages=messages,
                 stream=True,
@@ -281,12 +228,10 @@ class LocalLLMEngine:
                     yield content
                     
         finally:
-            # 5. Сохраняем результат в оперативную память для Роутера
             if 'full_assistant_response' in locals() and full_assistant_response.strip():
                 self.history.append({"role": "user", "content": user_prompt})
                 self.history.append({"role": "assistant", "content": full_assistant_response})
                 
-                # Защита от переполнения контекстного окна
                 max_hist = getattr(config, 'MAX_HISTORY_MESSAGES', 10)
                 if len(self.history) > max_hist:
                     self.history = self.history[-max_hist:]

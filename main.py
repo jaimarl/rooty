@@ -1,5 +1,6 @@
 import sys
 import json
+import getpass
 import socket
 import subprocess
 import atexit
@@ -73,9 +74,20 @@ class CLIApp:
 
     def run(self):
         """Главный цикл приложения."""
+        import getpass
+        import socket
+        from datetime import datetime  # Добавляем импорт для работы со временем
+        
+        # Динамически получаем имя пользователя и хост системы
+        username = getpass.getuser()
+        hostname = socket.gethostname()
+        
         while True:
             try:
-                user_text = input(f"\n[jaimarl@nixos]~> ").strip()
+                # 1. Время для запроса пользователя
+                current_time = datetime.now().strftime("%H:%M:%S")
+                user_text = input(f"\n\033[90m[{current_time}]\033[0m \033[92m[{username}@{hostname}]~>\033[0m ").strip()
+                
                 if not user_text:
                     continue
 
@@ -86,23 +98,34 @@ class CLIApp:
                 self.send_overlay("thinking")
                 
                 context = self.memory.search_relevant_context(user_text)
-                if context:
-                    print(f"[SYSTEM] Извлечено воспоминаний из БД: {context.count('jaimarl:')}")
-
                 is_complex, task_type = self.engine.analyze_prompt(user_text)
+
+                # 2. Время для результата роутинга
+                current_time = datetime.now().strftime("%H:%M:%S")
+
+                print("\n\033[90m┌── СИСТЕМНЫЙ ЛОГ")
+                if context:
+                    print(f"│ 🗃️ Извлечено воспоминаний из БД: {context.count(f'{username}:')}")
+                print(f"│ [{current_time}] 🧭 Маршрутизация: {task_type.upper()} ({'Сложный' if is_complex else 'Простой'})")
+                print("└──────────────────────────────────\033[0m\n")
+
+                # Общие данные
+                persona_prompt = config.PERSONAS.get(self.engine.current_persona, config.PERSONAS[config.DEFAULT_PERSONA])
 
                 # =========================================================
                 # ВЕТВЬ 1: ПРОСТОЙ ЗАПРОС (ОБРАБАТЫВАЕТ ЛЕГКАЯ МОДЕЛЬ)
                 # =========================================================
                 if not is_complex:
-                    print(f"[SYSTEM] ⚡ Быстрый ответ (Категория: {task_type.upper()})")
-                    print(f"> Fast-Агент: ", end="", flush=True)
+                    # 3. Время для ответа быстрой модели
+                    current_time = datetime.now().strftime("%H:%M:%S")
+                    print(f"\033[90m[{current_time}]\033[0m \033[96m[ ⚡ Fast-Агент ]\033[0m")
+                    print("\033[36m> \033[0m", end="", flush=True)
                     
-                    sys_prompt = config.PERSONAS.get(self.engine.current_persona, config.PERSONAS[config.DEFAULT_PERSONA])
-                    sys_prompt += "\n\nИНСТРУКЦИЯ: Отвечай кратко, ёмко и по делу (максимум 1-3 предложения)."
-                    
-                    if context:
-                        sys_prompt += f"\nИспользуй этот контекст памяти: {context}"
+                    context_block = f"\nИспользуй контекст:\n{context}" if context else ""
+                    sys_prompt = config.FAST_AGENT_SIMPLE_PROMPT.format(
+                        persona_prompt=persona_prompt,
+                        context_block=context_block
+                    )
                         
                     full_response = ""
                     for token in self.engine.stream_fast_response(user_text, sys_prompt):
@@ -112,12 +135,8 @@ class CLIApp:
                     
                     if full_response.strip():
                         self.memory.save_interaction(user_text, full_response)
-                        
-                        # Сохранение в RAM-контекст для Роутера
                         self.engine.history.append({"role": "user", "content": user_text})
                         self.engine.history.append({"role": "assistant", "content": full_response})
-                        if len(self.engine.history) > config.MAX_HISTORY_MESSAGES:
-                            self.engine.history = self.engine.history[-config.MAX_HISTORY_MESSAGES:]
                         
                     self.send_overlay("response", full_response)
 
@@ -125,21 +144,28 @@ class CLIApp:
                 # ВЕТВЬ 2: СЛОЖНЫЙ ЗАПРОС (ТЯЖЕЛАЯ МОДЕЛЬ + СЕКРЕТАРЬ)
                 # =========================================================
                 else:
-                    print(f"[SYSTEM] 🧠 Глубокий анализ (Категория: {task_type.upper()})")
+                    notify_sys = config.FAST_AGENT_NOTIFY_PROMPT.format(
+                        persona_prompt=persona_prompt,
+                        user_prompt=user_text
+                    )
                     
-                    # Динамическая генерация уведомления в стиле персонажа
-                    persona_prompt = config.PERSONAS.get(self.engine.current_persona, config.PERSONAS[config.DEFAULT_PERSONA])
-                    notify_sys = f"{persona_prompt}\n\nСИСТЕМНОЕ ЗАДАНИЕ: jaimarl только что дал сложную задачу. Напиши ОДНО короткое предложение. Предупреди, что тебе нужно время на анализ/написание кода, и попроси немного подождать. Ярко прояви свой характер! Придумай уникальную фразу."
+                    dummy_prompt = "Сгенерируй короткое уведомление о том, что ты приступил к задаче."
+                    notify_msg = self.engine.generate_fast_response(dummy_prompt, notify_sys)
                     
-                    notify_msg = self.engine.generate_fast_response(user_text, notify_sys)
-                    
-                    print(f"> Fast-Агент: {notify_msg}")
+                    # 4. Время для уведомления Секретаря
+                    current_time = datetime.now().strftime("%H:%M:%S")
+                    print(f"\033[90m[{current_time}]\033[0m \033[96m[ ⚡ Fast-Агент (Уведомление) ]\033[0m")
+                    print(f"\033[36m> {notify_msg}\033[0m\n")
                     self.send_overlay("thinking", f"⏳ {notify_msg}")
                     
-                    if task_type != self.engine.current_model_key:
-                        print(f"[SYSTEM] Подготовка модели {task_type.upper()}...")
+                    # ИЗМЕНЕНИЕ: Проверяем, не пустая ли память
+                    if task_type != self.engine.current_model_key or getattr(self.engine, 'llm', None) is None:
+                        print(f"\033[90m[ SYSTEM ] Загрузка модели {task_type.upper()} в VRAM...\033[0m\n")
                         
-                    print(f"> {self.engine.current_persona.capitalize()}: ", end="", flush=True)
+                    # 5. Время для развернутого ответа тяжелой модели
+                    current_time = datetime.now().strftime("%H:%M:%S")
+                    print(f"\033[90m[{current_time}]\033[0m \033[95m[ 🧠 {self.engine.current_persona.capitalize()} (Развернутый ответ) ]\033[0m")
+                    print("\033[35m> \033[0m", end="", flush=True)
                     
                     full_response = ""
                     for token in self.engine.generate_stream(user_text, long_term_context=context, task_type=task_type):
@@ -151,11 +177,14 @@ class CLIApp:
                         self.memory.save_interaction(user_text, full_response)
                         
                     self.send_overlay("response", "✅ Готово! Подробный ответ выведен в терминал.")
+                    
+                    # === НОВОЕ: ВЫГРУЗКА МОДЕЛИ ИЗ VRAM ===
+                    self.engine.unload_heavy_model()
 
             except KeyboardInterrupt:
-                print("\n[SYSTEM] Введите /exit для выхода.")
+                print("\n\033[90m[SYSTEM] Введите /exit для выхода.\033[0m")
             except Exception as e:
-                print(f"\n[ERROR] Ошибка генерации: {e}")
+                print(f"\n\033[91m[ERROR] Ошибка генерации: {e}\033[0m")
                 self.send_overlay("error", f"Ошибка: {e}")
 
 if __name__ == "__main__":
